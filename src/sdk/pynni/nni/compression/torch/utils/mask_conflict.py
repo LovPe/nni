@@ -4,7 +4,7 @@ import os
 import logging
 import torch
 import numpy as np
-from .shape_dependency import ChannelDependency, GroupDependency, CatPaddingDependency
+from .shape_dependency import ChannelDependency, GroupDependency, CatPaddingDependency, BNDependency
 # logging.basicConfig(level = logging.DEBUG)
 _logger = logging.getLogger('FixMaskConflict')
 
@@ -39,6 +39,8 @@ def fix_mask_conflict(masks, model=None, dummy_input=None, traced=None):
             # We need to trace the model in this way, else it will have problems
             traced = torch.jit.trace(model, dummy_input)
 
+    fix_bn_mask = BNMaskConflict(masks, model, dummy_input, traced)
+    masks = fix_bn_mask.fix_mask()
     fix_group_mask = GroupMaskConflict(masks, model, dummy_input, traced)
     masks = fix_group_mask.fix_mask()
     fix_channel_mask = ChannelMaskConflict(masks, model, dummy_input, traced)
@@ -287,4 +289,50 @@ class ChannelMaskConflict(MaskFix):
             _logger.info('Pruned Filters after fixing conflict:')
             pruned_filters = set(list(range(ori_channels)))-channel_remain
             _logger.info(str(sorted(pruned_filters)))
+        return self.masks
+
+
+class BNMaskConflict(MaskFix):
+    def __init__(self, masks, model=None, dummy_input=None, traced=None):
+        """
+        BNMaskConflict fix the mask conflict between the layers that
+        has BN dependecy.
+
+        Parameters
+        ----------
+        masks : dict
+            a dict object that stores the masks
+        model : torch.nn.Module
+            model to fix the mask conflict
+        dummy_input : torch.Tensor
+            input example to trace the model
+        traced : torch._C.torch.jit.TopLevelTracedModule
+            the traced model of the target model, is this parameter is not None,
+            we donnot use the model and dummpy_input to get the trace graph.
+        """
+        super(BNMaskConflict, self).__init__(masks, model, dummy_input, traced)
+
+    def fix_mask(self):
+        """
+        Fix the mask conflict before the mask inference for the layers that
+        has group dependencies. This function should be called before the
+        mask inference of the 'speedup' module.
+        """
+        bn_depen = BNDependency(self.model, self.dummy_input, self.traced)
+        depens = bn_depen.dependency
+        _logger.info(depens)
+        saw = list()
+        mask_keys = self.masks.keys()
+        for k, v in depens.items():
+            pre_bn, pos_bn = v
+            assert (pre_bn not in saw) and (pos_bn not in saw), ValueError("invalid structure found in BN mask fix")
+            saw.extend([pre_bn, pos_bn])
+            if pre_bn in mask_keys and pos_bn in mask_keys:
+                mask_weight = ((self.masks[pre_bn]['weight'] + self.masks[pos_bn]['weight']) > 0).float()
+                self.masks[pre_bn]['weight'] = mask_weight
+                self.masks[pos_bn]['weight'] = mask_weight
+                if 'bias' in self.masks[pre_bn].keys() and 'bias' in self.masks[pos_bn].keys():
+                    mask_bias = ((self.masks[pre_bn]['bias'] + self.masks[pos_bn]['bias']) > 0).float()
+                    self.masks[pre_bn]['bias'] = mask_bias
+                    self.masks[pos_bn]['bias'] = mask_bias
         return self.masks

@@ -116,6 +116,10 @@ class ModelSpeedup:
                                                           in_shape,
                                                           self.torch_graph.name_to_node[module_name].auxiliary,
                                                           last_module)
+            elif m_type in ['Conv2d']:
+                _, m_conv = get_module_by_name(self.bound_model, self.torch_graph.name_to_node[module_name].name)
+                is_dw = m_conv.in_channels == m_conv.out_channels == m_conv.groups
+                output_cmask = infer_from_inshape[m_type](module_masks, in_shape, is_dw)
             else:
                 output_cmask = infer_from_inshape[m_type](module_masks, in_shape)
         if out_shape is not None:

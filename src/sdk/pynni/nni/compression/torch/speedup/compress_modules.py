@@ -117,13 +117,18 @@ def replace_conv2d(conv, mask):
         out_channels = out_channels_index.size()[0]
 
     _logger.debug("replace conv2d with in_channels: %d, out_channels: %d", in_channels, out_channels)
+    # if input channel and output channel and group is the same in Conv2D,
+    # the replaced module should have same shape
+    is_dw = conv.in_channels == conv.out_channels == conv.groups
+
+    group = in_channels if in_channels == out_channels and is_dw else conv.groups
     new_conv = torch.nn.Conv2d(in_channels=in_channels,
                                out_channels=out_channels,
                                kernel_size=conv.kernel_size,
                                stride=conv.stride,
                                padding=conv.padding,
                                dilation=conv.dilation,
-                               groups=conv.groups,
+                               groups=group,
                                bias=conv.bias is not None,
                                padding_mode=conv.padding_mode)
 
@@ -143,7 +148,7 @@ def replace_conv2d(conv, mask):
     input_step = int(conv.in_channels / conv.groups)
     in_channels_group = int(in_channels / conv.groups)
     filter_step = int(out_channels / conv.groups)
-    if mask.input_mask is not None:
+    if mask.input_mask is not None and (not is_dw):
         for groupid in range(conv.groups):
             start = groupid * input_step
             end = (groupid + 1) * input_step

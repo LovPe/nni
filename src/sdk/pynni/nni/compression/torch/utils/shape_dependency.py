@@ -3,6 +3,7 @@
 
 import csv
 import logging
+from ..speedup.compressor import get_module_by_name
 
 __all__ = ['ChannelDependency', 'GroupDependency', 'CatPaddingDependency']
 
@@ -381,3 +382,89 @@ class GroupDependency(Dependency):
             for name in self.dependency:
                 group = self.dependency[name]
                 csv_w.writerow([name, group])
+
+
+class BNDependency(Dependency):
+    def __init__(self, model=None, dummy_input=None, traced_model=None):
+        self.model = model
+        super(BNDependency, self).__init__(model, dummy_input, traced_model)
+
+    def _get_parent_convs(self, node):
+        """
+        Find the nearest father conv layers for the target node.
+
+        Parameters
+        ---------
+        node : torch._C.Node
+            target node.
+
+        Returns
+        -------
+        parent_layers : list
+            nearest father conv layers for the target node. Due to the group
+            dependency only exists between the conv layers, so we only find
+            the parent conv layers.
+        """
+        parent_layers = []
+        # the input node is a Conv node
+        predeessors = self.graph.find_predecessors(node.unique_name)
+        predeessors = [self.graph.name_to_node[x] for x in predeessors]
+        queue = predeessors
+        while queue:
+            curnode = queue.pop(0)
+            if curnode.op_type == 'Conv2d':
+                # find the first met conv
+                parent_layers.append(curnode.name)
+                continue
+            parents = self.graph.find_predecessors(curnode.unique_name)
+            parents = [self.graph.name_to_node[name] for name in parents]
+            for parent in parents:
+                queue.append(parent)
+        return parent_layers
+
+    def _find_parent_bn(self, node):
+        # the input node is a Conv node
+        predeessors = self.graph.find_predecessors(node.unique_name)
+        predeessors = [self.graph.name_to_node[x] for x in predeessors]
+        queue = predeessors
+        parent_layers = []
+        while queue:
+            curnode = queue.pop(0)
+            if curnode.op_type == 'BatchNorm2d':
+                # find the first met bn
+                parent_layers.append(curnode.name)
+                continue
+            if curnode.op_type == 'Conv2d':
+                # drop the node if first met conv
+                continue
+            parents = self.graph.find_predecessors(curnode.unique_name)
+            parents = [self.graph.name_to_node[name] for name in parents]
+            for parent in parents:
+                queue.append(parent)
+        return parent_layers
+
+    def build_dependency(self):
+        """
+        Build the BN dependency for the conv layers
+        in the model.
+        Returns
+        """
+        for node in self.graph.nodes_py.nodes_op:
+            if node.op_type == 'BatchNorm2d':
+                parent_convs = self._get_parent_convs(node)
+                # TODO support multi branch DW dependence,
+                #  currently only find BN--ConvDW--BN structure
+                if len(parent_convs) == 1:
+                    conv_node = self.graph.name_to_node[parent_convs[0]]
+                    _, m_conv = get_module_by_name(self.model, conv_node.name)
+                    is_dw = m_conv.in_channels == m_conv.out_channels == m_conv.groups
+                    if is_dw:
+                        parent_bn = self._find_parent_bn(conv_node)
+                        if len(parent_bn) == 1:
+                            self.dependency[parent_convs[0]] = (parent_bn[0], node.name)
+                elif len(parent_convs) > 1:
+                    raise ValueError("too many parents for BN NODE:{}".format(node.name))
+        return self.dependency
+
+    def export(self, filepath):
+        raise NotImplementedError

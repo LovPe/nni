@@ -223,7 +223,8 @@ infer_from_inshape = {
     'ReLU6': lambda module_masks, mask: relu_inshape(module_masks, mask),
     'aten::relu': lambda module_masks, mask: relu_inshape(module_masks, mask),
     'aten::relu_': lambda module_masks, mask: relu_inshape(module_masks, mask),
-    'Conv2d': lambda module_masks, mask: conv2d_inshape(module_masks, mask),
+    'aten::hardtanh_': lambda module_masks, mask: relu_inshape(module_masks, mask),
+    'Conv2d': lambda module_masks, mask, is_dw: conv2d_inshape(module_masks, mask, is_dw),
     'MaxPool2d': lambda module_masks, mask: maxpool2d_inshape(module_masks, mask),
     'aten::max_pool2d': lambda module_masks, mask: maxpool2d_inshape(module_masks, mask),
     'aten::avg_pool2d': lambda module_masks, mask: maxpool2d_inshape(module_masks, mask),
@@ -669,7 +670,7 @@ def conv2d_mask(module_masks, mask):
     return None, module_masks.output_mask
 
 
-def conv2d_inshape(module_masks, mask):
+def conv2d_inshape(module_masks, mask, is_dw=False):
     """
     Shape change of input tensor does not affect the shape of its output tensor
 
@@ -679,7 +680,7 @@ def conv2d_inshape(module_masks, mask):
         The ModuleMasks instance of the conv2d
     mask : CoarseMask
         The mask of its input tensor
-
+    is_dw: a flag to check if it is depthwise conv
     Returns
     -------
     CoarseMask
@@ -693,7 +694,9 @@ def conv2d_inshape(module_masks, mask):
         # than once, such as a concat operation.
         assert module_masks.input_mask <= mask
         module_masks.input_mask.merge(mask)
-    return None
+    if is_dw:
+        module_masks.set_output_mask(module_masks.input_mask)
+    return mask if is_dw else None
 
 
 def conv2d_outshape(module_masks, mask):
@@ -721,7 +724,8 @@ def conv2d_outshape(module_masks, mask):
     if module_masks.output_mask is not None:
         assert isinstance(module_masks.output_mask, CoarseMask)
         # set shape of output
-        mask = module_masks.output_mask.merge(mask)
+        mask = CoarseMask(num_dim=4)
+        mask.mask_index = module_masks.output_mask.merge(mask)
     else:
         module_masks.output_mask = mask
     # infer shape of parameters
